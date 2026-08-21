@@ -24,8 +24,13 @@ Item {
   property bool configReady: false
   property bool booted: false
   property var pendingSet: null
+  property bool pendingUnlock: false
+  property var pendingNudge: null
+  property bool poseTouched: false
   property var lastOccupancy: ({ state: "missing", via: "", app: "", device: "" })
   property var pendingOccupancy: null
+  property bool persisting: false
+  property bool haveDiskConfig: false
 
   readonly property string statusText: Model.statusLine(present, otherInUse, previewActive, occupancyApp)
   readonly property bool live: otherInUse || previewActive
@@ -44,15 +49,18 @@ Item {
     selectPreset(config.defaultPreset)
   }
 
-  function park() {
-    setPose(Model.parkPose(config, ranges), false)
-  }
-
   function setDefaultPreset(id) {
     var next = Model.normalizeConfig(config)
     next.defaultPreset = String(id)
     config = next
     persist()
+  }
+
+  function resetPresets() {
+    config = Model.defaultConfig()
+    haveDiskConfig = true
+    persist()
+    selectPreset("1")
   }
 
   function renamePreset(id, name) {
@@ -80,15 +88,27 @@ Item {
     persist()
   }
 
-  function saveParkToCurrent() {
-    var next = Model.normalizeConfig(config)
-    next.park = Model.clonePose(pose)
-    config = next
-    persist()
+  function nudge(dPan, dTilt, dZoom, fine) {
+    poseTouched = true
+    if (setProc.running) {
+      if (!pendingNudge)
+        pendingNudge = { dPan: 0, dTilt: 0, dZoom: 0, fine: !!fine }
+      pendingNudge.dPan += dPan
+      pendingNudge.dTilt += dTilt
+      pendingNudge.dZoom += dZoom
+      pendingNudge.fine = !!fine
+      return
+    }
+    runNudge(dPan, dTilt, dZoom, !!fine)
   }
 
-  function nudge(dPan, dTilt, dZoom) {
-    setPose(Model.nudgePose(pose, ranges, dPan, dTilt, dZoom), true)
+  function runNudge(dPan, dTilt, dZoom, fine) {
+    if (!ptzBin) return
+    var cmd = ["python3", ptzBin, "nudge"]
+    if (fine) cmd.push("--fine")
+    cmd.push(String(dPan), String(dTilt), String(dZoom))
+    setProc.command = cmd
+    setProc.running = true
   }
 
   function setPose(nextPose, fromNudge) {
@@ -97,17 +117,23 @@ Item {
       pose = nextPose
       return
     }
+    poseTouched = true
     pose = nextPose
+    pendingNudge = null
     if (setProc.running) {
       pendingSet = nextPose
+      pendingUnlock = !fromNudge
       return
     }
-    runSet(nextPose)
+    runSet(nextPose, !fromNudge)
   }
 
-  function runSet(nextPose) {
+  function runSet(nextPose, unlock) {
     if (!ptzBin) return
-    setProc.command = ["python3", ptzBin, "set", String(nextPose.pan), String(nextPose.tilt), String(nextPose.zoom)]
+    var cmd = ["python3", ptzBin, "set"]
+    if (unlock) cmd.push("--unlock")
+    cmd.push(String(nextPose.pan), String(nextPose.tilt), String(nextPose.zoom))
+    setProc.command = cmd
     setProc.running = true
   }
 
@@ -118,14 +144,23 @@ Item {
   }
 
   function persist() {
+    if (!configReady) return
+    haveDiskConfig = true
+    persisting = true
     configFile.setText(JSON.stringify(config, null, 2) + "\n")
+    persistUnlock.restart()
   }
 
   function loadConfig(raw) {
-    config = Model.normalizeConfig(Model.parseJson(raw, null))
+    var parsed = Model.parseJson(raw, null)
+    if (parsed && parsed.presets) {
+      config = Model.normalizeConfig(parsed)
+      haveDiskConfig = true
+    } else if (!haveDiskConfig) {
+      config = Model.defaultConfig()
+    }
     configReady = true
-    if (present && booted && !otherInUse && occupancyState === "idle")
-      park()
+    persisting = false
   }
 
   function applyOccupancy(parsed, fromPoll) {
@@ -136,6 +171,12 @@ Item {
       return
     }
     commitOccupancy(parsed, fromPoll)
+  }
+
+  Timer {
+    id: persistUnlock
+    interval: 500
+    onTriggered: root.persisting = false
   }
 
   Timer {
@@ -163,13 +204,11 @@ Item {
 
     if (!booted) {
       if (fromPoll) booted = true
-      if (present && !otherInUse) park()
       return
     }
 
     if (!present) return
     if (otherInUse && !wasLive) applyDefault()
-    if (!otherInUse && wasLive && !previewActive) park()
   }
 
   FileView {
@@ -177,7 +216,7 @@ Item {
     path: root.configPath
     watchChanges: true
     printErrors: false
-    onFileChanged: reload()
+    onFileChanged: if (!root.persisting) reload()
     onLoaded: root.loadConfig(text())
     onLoadFailed: root.loadConfig("")
   }
@@ -190,7 +229,7 @@ Item {
         var parsed = Model.parseGet(text)
         root.present = parsed.present
         if (parsed.present) {
-          root.pose = parsed.pose
+          if (!root.poseTouched) root.pose = parsed.pose
           if (parsed.ranges) root.ranges = parsed.ranges
         }
       }
@@ -203,14 +242,23 @@ Item {
       waitForEnd: true
       onStreamFinished: {
         var parsed = Model.parseSet(text)
-        if (parsed) root.pose = parsed
+        if (parsed && !root.pendingSet) root.pose = parsed
       }
     }
     onExited: function() {
       if (root.pendingSet) {
         var next = root.pendingSet
+        var unlock = root.pendingUnlock
         root.pendingSet = null
-        root.runSet(next)
+        root.pendingUnlock = false
+        root.pendingNudge = null
+        root.runSet(next, unlock)
+        return
+      }
+      if (root.pendingNudge) {
+        var n = root.pendingNudge
+        root.pendingNudge = null
+        root.runNudge(n.dPan, n.dTilt, n.dZoom, n.fine)
       }
     }
   }
@@ -234,7 +282,16 @@ Item {
     }
   }
 
+  Process {
+    id: prepareProc
+  }
+
   Component.onCompleted: {
+    console.log("dave.insta360-link service 0.1.4")
+    if (ptzBin) {
+      prepareProc.command = ["python3", ptzBin, "prepare"]
+      prepareProc.running = true
+    }
     refreshPose()
     configFile.reload()
   }

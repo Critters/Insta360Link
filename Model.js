@@ -1,3 +1,12 @@
+function repoUrl() {
+  return "https://github.com/OWNER/Insta360Link"
+}
+
+function num(value, fallback) {
+  var n = Number(value)
+  return isFinite(n) ? n : fallback
+}
+
 function emptyPose() {
   return { pan: 0, tilt: 0, zoom: 100 }
 }
@@ -5,9 +14,9 @@ function emptyPose() {
 function clonePose(pose) {
   if (!pose) return emptyPose()
   return {
-    pan: Number(pose.pan) || 0,
-    tilt: Number(pose.tilt) || 0,
-    zoom: Number(pose.zoom) || 100
+    pan: num(pose.pan, 0),
+    tilt: num(pose.tilt, 0),
+    zoom: num(pose.zoom, 100)
   }
 }
 
@@ -27,9 +36,9 @@ function normalizePreset(raw, fallbackId) {
   return {
     id: id,
     name: name,
-    pan: Number(raw && raw.pan) || 0,
-    tilt: Number(raw && raw.tilt) || 0,
-    zoom: Number(raw && raw.zoom) || 100
+    pan: num(raw && raw.pan, 0),
+    tilt: num(raw && raw.tilt, 0),
+    zoom: num(raw && raw.zoom, 100)
   }
 }
 
@@ -37,7 +46,6 @@ function defaultConfig() {
   return {
     version: 1,
     defaultPreset: "1",
-    park: null,
     presets: [
       defaultPreset("1", "1"),
       defaultPreset("2", "2"),
@@ -60,8 +68,6 @@ function normalizeConfig(raw) {
   var def = String(raw.defaultPreset || "1")
   if (def !== "1" && def !== "2" && def !== "3") def = "1"
   cfg.defaultPreset = def
-  if (raw.park && typeof raw.park === "object") cfg.park = clonePose(raw.park)
-  else cfg.park = null
   return cfg
 }
 
@@ -107,13 +113,6 @@ function parseSet(text) {
   return clonePose(parsed.pose)
 }
 
-function parkPose(config, ranges) {
-  if (config && config.park) return clonePose(config.park)
-  var tiltMin = ranges && ranges.tilt ? ranges.tilt.min : -324000
-  var zoomMin = ranges && ranges.zoom ? ranges.zoom.min : 100
-  return { pan: 0, tilt: tiltMin, zoom: zoomMin }
-}
-
 function presetById(config, id) {
   var presets = config && config.presets ? config.presets : []
   for (var i = 0; i < presets.length; i++) {
@@ -126,7 +125,7 @@ function statusLine(present, otherInUse, previewOn, app) {
   if (!present) return "UNPLUGGED"
   if (otherInUse) return app ? ("LIVE · " + String(app).toUpperCase()) : "LIVE"
   if (previewOn) return "PREVIEW"
-  return "PARKED"
+  return "IDLE"
 }
 
 function qmlPath(url) {
@@ -140,6 +139,8 @@ function nudgePose(pose, ranges, dPan, dTilt, dZoom) {
   var panStep = ranges && ranges.pan ? ranges.pan.step : 3600
   var tiltStep = ranges && ranges.tilt ? ranges.tilt.step : 3600
   var zoomStep = ranges && ranges.zoom ? ranges.zoom.step : 1
+  if (dPan) panStep = Math.max(panStep, 7200)
+  if (dTilt) tiltStep = Math.max(tiltStep, 18000)
   if (dZoom) zoomStep = Math.max(zoomStep, 10)
   next.pan += dPan * panStep
   next.tilt += dTilt * tiltStep

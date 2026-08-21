@@ -5,12 +5,19 @@ import qs.Commons
 BorderSurface {
   id: root
 
-  property string iconText: ""
+  property string fastText: ">>"
+  property string fineText: ">"
+  property bool shiftHeld: false
+  property real iconRotation: 0
   property color foreground: Color.foreground
   property color accent: Color.accent
   property bool holding: false
+  property bool fine: false
 
-  signal tick()
+  readonly property string iconText: shiftHeld ? fineText : fastText
+
+  signal tick(bool fine)
+  signal shiftSeen(bool held)
 
   implicitWidth: Style.space(44)
   implicitHeight: Style.space(44)
@@ -26,6 +33,8 @@ BorderSurface {
     color: root.foreground
     font.family: Style.font.family
     font.pixelSize: Style.font.title
+    font.bold: true
+    rotation: root.iconRotation
   }
 
   MouseArea {
@@ -33,16 +42,28 @@ BorderSurface {
     anchors.fill: parent
     hoverEnabled: true
     cursorShape: Qt.PointingHandCursor
-    onPressed: root.holding = true
-    onReleased: root.holding = false
+    onPressed: function(mouse) {
+      root.fine = !!(mouse.modifiers & Qt.ShiftModifier)
+      root.shiftSeen(root.fine)
+      root.holding = true
+    }
+    onPositionChanged: function(mouse) {
+      var held = !!(mouse.modifiers & Qt.ShiftModifier)
+      root.shiftSeen(held)
+      if (root.holding) root.fine = held
+    }
+    onReleased: function(ev) {
+      root.holding = false
+      root.shiftSeen(!!(ev.modifiers & Qt.ShiftModifier))
+    }
     onCanceled: root.holding = false
   }
 
   Timer {
-    interval: 150
+    interval: 90
     repeat: true
     running: root.holding
     triggeredOnStart: true
-    onTriggered: root.tick()
+    onTriggered: root.tick(root.fine)
   }
 }

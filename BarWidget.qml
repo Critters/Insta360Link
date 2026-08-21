@@ -70,8 +70,7 @@ BarWidget {
     tooltipText: ptz ? ptz.statusText : "Camera"
 
     onPressed: function(b) {
-      if (b === Qt.RightButton && root.ptz) root.ptz.park()
-      else root.toggle()
+      root.toggle()
     }
   }
 }

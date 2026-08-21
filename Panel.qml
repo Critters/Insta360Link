@@ -18,16 +18,25 @@ Panel {
   property string selectedId: "1"
   property string editingId: ""
   property bool poseDirty: false
+  property bool showHelp: false
+  property bool shiftHeld: false
+  property string clickPresetId: ""
 
   readonly property var barIdentity: hostWidget || root
   readonly property color foreground: bar ? bar.foreground : Color.foreground
   readonly property color accent: Color.accent
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
-  readonly property var config: ptz ? ptz.config : Model.defaultConfig()
+  function service() {
+    if (bar && bar.shell && typeof bar.shell.serviceFor === "function")
+      return bar.shell.serviceFor("dave.insta360-link")
+    return ptz
+  }
+
+  readonly property var config: (service() ? service().config : null) || Model.defaultConfig()
   readonly property var presets: config.presets
   readonly property string defaultId: config.defaultPreset
-  readonly property string statusText: ptz ? ptz.statusText : "UNPLUGGED"
-  readonly property bool present: ptz ? ptz.present : false
+  readonly property string statusText: service() ? service().statusText : "UNPLUGGED"
+  readonly property bool present: service() ? service().present : false
 
   function open() {
     openedFromHotkey = false
@@ -48,6 +57,7 @@ Panel {
   function close() {
     setCenterHoverRevealSuppressed(false)
     cancelRename()
+    showHelp = false
     setPreview(false)
     root.controller.hide()
   }
@@ -70,7 +80,8 @@ Panel {
 
   function setPreview(value) {
     previewOn = !!value && present
-    if (ptz) ptz.setPreviewActive(previewOn)
+    var s = root.service()
+    if (s) s.setPreviewActive(previewOn)
     if (!previewOn) previewLoader.active = false
     else previewLoader.active = true
   }
@@ -78,11 +89,13 @@ Panel {
   function selectPreset(id) {
     selectedId = String(id)
     poseDirty = false
-    if (ptz) ptz.selectPreset(selectedId)
+    var s = root.service()
+    if (s) s.selectPreset(selectedId)
   }
 
   function setDefault(id) {
-    if (ptz) ptz.setDefaultPreset(id)
+    var s = root.service()
+    if (s) s.setDefaultPreset(id)
   }
 
   function startRename(id) {
@@ -91,11 +104,12 @@ Panel {
   }
 
   function commitRename(name) {
-    if (editingId === "" || !ptz) {
+    if (editingId === "" || !root.service()) {
       cancelRename()
       return
     }
-    ptz.renamePreset(editingId, name)
+    var s = root.service()
+    if (s) s.renamePreset(editingId, name)
     editingId = ""
   }
 
@@ -103,25 +117,32 @@ Panel {
     editingId = ""
   }
 
-  function nudge(dPan, dTilt, dZoom) {
-    if (!ptz || !present) return
-    ptz.nudge(dPan, dTilt, dZoom)
+  function nudge(dPan, dTilt, dZoom, fine) {
+    var s = root.service()
+    if (!s || !root.present) return
+    s.nudge(dPan, dTilt, dZoom, !!fine)
     poseDirty = true
     saveTimer.restart()
   }
 
   function handleMove(dx, dy) {
     if (editingId !== "") return
-    if (dx !== 0) nudge(dx, 0, 0)
-    if (dy !== 0) nudge(0, -dy, 0)
+    if (dx !== 0) nudge(dx, 0, 0, root.shiftHeld)
+    if (dy !== 0) nudge(0, -dy, 0, root.shiftHeld)
+  }
+
+  Timer {
+    id: clickDelay
+    interval: 280
+    onTriggered: root.selectPreset(root.clickPresetId)
   }
 
   Timer {
     id: saveTimer
     interval: 250
     onTriggered: {
-      if (root.poseDirty && root.ptz)
-        root.ptz.savePoseToPreset(root.selectedId)
+      if (root.poseDirty && root.service())
+        root.service().savePoseToPreset(root.selectedId)
       root.poseDirty = false
     }
   }
@@ -147,9 +168,23 @@ Panel {
       onTextKey: function(t) {
         if (t === "1" || t === "2" || t === "3") root.selectPreset(t)
         else if (t === "p" || t === "P") root.setPreview(!root.previewOn)
-        else if (t === "+" || t === "=") root.nudge(0, 0, 1)
-        else if (t === "-" || t === "_") root.nudge(0, 0, -1)
+        else if (t === "+" || t === "=") root.nudge(0, 0, 1, root.shiftHeld)
+        else if (t === "-" || t === "_") root.nudge(0, 0, -1, root.shiftHeld)
         else if (t === "d" || t === "D") root.setDefault(root.selectedId)
+        else if (t === "i" || t === "I") root.showHelp = !root.showHelp
+      }
+      Keys.forwardTo: [shiftSpy]
+
+      Item {
+        id: shiftSpy
+        Keys.onPressed: function(event) {
+          if (event.key === Qt.Key_Shift) root.shiftHeld = true
+          else root.shiftHeld = !!(event.modifiers & Qt.ShiftModifier)
+        }
+        Keys.onReleased: function(event) {
+          if (event.key === Qt.Key_Shift) root.shiftHeld = false
+          else root.shiftHeld = !!(event.modifiers & Qt.ShiftModifier)
+        }
       }
 
       Column {
@@ -160,7 +195,7 @@ Panel {
         PanelHero {
           width: parent.width
           title: "Camera"
-          meta: root.statusText
+          meta: root.statusText + "  ·  v0.1.4"
           foreground: root.foreground
           fontFamily: root.fontFamily
           iconComponent: Text {
@@ -180,13 +215,13 @@ Panel {
             }
 
             Button {
-              text: "Park"
+              text: "i"
               foreground: root.foreground
               accent: root.accent
               bordered: true
-              tooltipText: "Look down. Right click saves the current pose as park."
-              onClicked: if (root.ptz) root.ptz.park()
-              onRightClicked: if (root.ptz) root.ptz.saveParkToCurrent()
+              selected: root.showHelp
+              tooltipText: "How this works"
+              onClicked: root.showHelp = !root.showHelp
             }
           }
         }
@@ -228,7 +263,57 @@ Panel {
           }
         }
 
+        Column {
+          width: parent.width
+          spacing: Style.space(12)
+          visible: root.showHelp
+
+          Text {
+            width: parent.width
+            text: "- First preset is the camera's default.\n- Save upto 3 presets, changes you make are auto-saved as they are made.\n- Shift+Click to reduce the jog speed.\n- Double click a preset to rename it."
+            color: root.foreground
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.body
+            wrapMode: Text.WordWrap
+            lineHeight: 1.35
+          }
+          Text {
+            width: parent.width
+            text: "Thanks DHH!"
+            color: Qt.darker(root.foreground, 1.25)
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.body
+          }
+          Row {
+            width: parent.width
+            spacing: Style.space(8)
+
+            Button {
+              width: (parent.width - parent.spacing) / 2
+              text: "Reset"
+              foreground: root.foreground
+              accent: root.accent
+              bordered: true
+              onClicked: {
+                var s = root.service()
+                if (s) s.resetPresets()
+                root.selectedId = "1"
+              }
+            }
+            Button {
+              width: (parent.width - parent.spacing) / 2
+              text: "Repo"
+              foreground: root.foreground
+              accent: root.accent
+              bordered: true
+              onClicked: Quickshell.execDetached(["xdg-open", Model.repoUrl()])
+            }
+          }
+        }
+
         Row {
+          id: presetRow
+          visible: !root.showHelp
           width: parent.width
           spacing: Style.space(8)
 
@@ -243,8 +328,8 @@ Panel {
               readonly property bool isDefault: root.defaultId === presetId
               readonly property bool isEditing: root.editingId === presetId
 
-              width: (parent.width - Style.space(16)) / 3
-              implicitHeight: Style.space(36)
+              width: Math.max(1, (presetRow.width - 2 * presetRow.spacing) / 3)
+              height: Style.space(36)
               radius: Style.cornerRadius
               color: isSelected
                 ? Style.selectedFillFor(root.foreground, root.accent)
@@ -307,11 +392,17 @@ Panel {
                 cursorShape: Qt.PointingHandCursor
                 onClicked: function(mouse) {
                   if (mouse.button === Qt.RightButton) {
+                    clickDelay.stop()
                     root.setDefault(tab.presetId)
                     return
                   }
-                  if (mouse.clickCount >= 2) root.startRename(tab.presetId)
-                  else root.selectPreset(tab.presetId)
+                  if (clickDelay.running && root.clickPresetId === tab.presetId) {
+                    clickDelay.stop()
+                    root.startRename(tab.presetId)
+                    return
+                  }
+                  root.clickPresetId = tab.presetId
+                  clickDelay.restart()
                 }
               }
             }
@@ -319,6 +410,7 @@ Panel {
         }
 
         Item {
+          visible: !root.showHelp
           width: parent.width
           implicitHeight: padGrid.implicitHeight
 
@@ -330,42 +422,62 @@ Panel {
 
             Item { width: Style.space(44); height: Style.space(44) }
             PadButton {
-              iconText: "▲"
+              fastText: ">>"
+              fineText: ">"
+              iconRotation: -90
+              shiftHeld: root.shiftHeld
               foreground: root.foreground
               accent: root.accent
-              onTick: root.nudge(0, 1, 0)
+              onTick: function(fine) { root.nudge(0, 1, 0, fine) }
+              onShiftSeen: function(held) { root.shiftHeld = held }
             }
             PadButton {
-              iconText: "+"
+              fastText: "+"
+              fineText: "+"
+              shiftHeld: root.shiftHeld
               foreground: root.foreground
               accent: root.accent
-              onTick: root.nudge(0, 0, 1)
+              onTick: function(fine) { root.nudge(0, 0, 1, fine) }
+              onShiftSeen: function(held) { root.shiftHeld = held }
             }
             PadButton {
-              iconText: "◀"
+              fastText: "<<"
+              fineText: "<"
+              shiftHeld: root.shiftHeld
               foreground: root.foreground
               accent: root.accent
-              onTick: root.nudge(-1, 0, 0)
+              onTick: function(fine) { root.nudge(-1, 0, 0, fine) }
+              onShiftSeen: function(held) { root.shiftHeld = held }
             }
             Item { width: Style.space(44); height: Style.space(44) }
             PadButton {
-              iconText: "▶"
+              fastText: ">>"
+              fineText: ">"
+              shiftHeld: root.shiftHeld
               foreground: root.foreground
               accent: root.accent
-              onTick: root.nudge(1, 0, 0)
+              onTick: function(fine) { root.nudge(1, 0, 0, fine) }
+              onShiftSeen: function(held) { root.shiftHeld = held }
             }
             Item { width: Style.space(44); height: Style.space(44) }
             PadButton {
-              iconText: "▼"
+              fastText: ">>"
+              fineText: ">"
+              iconRotation: 90
+              shiftHeld: root.shiftHeld
               foreground: root.foreground
               accent: root.accent
-              onTick: root.nudge(0, -1, 0)
+              onTick: function(fine) { root.nudge(0, -1, 0, fine) }
+              onShiftSeen: function(held) { root.shiftHeld = held }
             }
             PadButton {
-              iconText: "−"
+              fastText: "-"
+              fineText: "-"
+              shiftHeld: root.shiftHeld
               foreground: root.foreground
               accent: root.accent
-              onTick: root.nudge(0, 0, -1)
+              onTick: function(fine) { root.nudge(0, 0, -1, fine) }
+              onShiftSeen: function(held) { root.shiftHeld = held }
             }
           }
         }

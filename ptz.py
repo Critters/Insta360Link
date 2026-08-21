@@ -3,9 +3,12 @@
 
 from __future__ import annotations
 
+import ctypes
+import fcntl
 import json
 import os
 import re
+import struct
 import subprocess
 import sys
 
@@ -20,10 +23,43 @@ IGNORE_COMMS = {
     "wireplumber",
     "quickshell",
     "v4l2-ctl",
+    "python3",
+    "python",
     "xdg-desktop-portal",
     "xdg-desktop-por",  # comm is truncated to 15 chars
     "xdg-document-po",
 }
+
+V4L2_CID_PAN_ABSOLUTE = 0x009A0908
+V4L2_CID_TILT_ABSOLUTE = 0x009A0909
+V4L2_CID_ZOOM_ABSOLUTE = 0x009A090D
+
+# _IOWR('V', 27/28, struct v4l2_control) with 8-byte payload
+_VIDIOC_G_CTRL = 0xC008561B
+_VIDIOC_S_CTRL = 0xC008561C
+
+UVC_SET_CUR = 0x01
+UVC_GET_LEN = 0x85
+XU_UNIT = 9
+XU_MODE = 2
+XU_MODE_LEN = 52
+
+
+class UvcXuQuery(ctypes.Structure):
+    _fields_ = [
+        ("unit", ctypes.c_uint8),
+        ("selector", ctypes.c_uint8),
+        ("query", ctypes.c_uint8),
+        ("size", ctypes.c_uint16),
+        ("data", ctypes.c_void_p),
+    ]
+
+
+def _ioc(direction: int, type_ch: str, nr: int, size: int) -> int:
+    return (direction << 30) | (ord(type_ch) << 8) | nr | (size << 16)
+
+
+UVCIOC_CTRL_QUERY = _ioc(3, "u", 0x21, ctypes.sizeof(UvcXuQuery))
 
 CTRL_RE = re.compile(
     r"^\s*(pan_absolute|tilt_absolute|zoom_absolute)\s+\S+\s+\(int\)\s*:"
@@ -56,13 +92,7 @@ def run(cmd: list[str], timeout: float = 2.0) -> subprocess.CompletedProcess[str
 
 def find_device() -> str | None:
     for path in DEVICE_CANDIDATES:
-        if not os.path.exists(path):
-            continue
-        try:
-            proc = run(["v4l2-ctl", "-d", path, "--list-ctrls"], timeout=1.5)
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            continue
-        if proc.returncode == 0 and "pan_absolute" in proc.stdout:
+        if os.path.exists(path):
             return path
     return None
 
@@ -97,6 +127,76 @@ def snap(value: int, spec: dict[str, int]) -> int:
     return lo + round((value - lo) / step) * step
 
 
+def s_ctrl(fd: int, ctrl_id: int, value: int) -> None:
+    packed = struct.pack("Ii", ctrl_id, int(value))
+    fcntl.ioctl(fd, _VIDIOC_S_CTRL, packed)
+
+
+def g_ctrl(fd: int, ctrl_id: int) -> int:
+    buf = bytearray(struct.pack("Ii", ctrl_id, 0))
+    fcntl.ioctl(fd, _VIDIOC_G_CTRL, buf)
+    _cid, value = struct.unpack("Ii", bytes(buf))
+    return value
+
+
+class _ExtCtrl(ctypes.Structure):
+    _pack_ = 1
+    _layout_ = "ms"
+    _fields_ = [
+        ("id", ctypes.c_uint32),
+        ("size", ctypes.c_uint32),
+        ("reserved2", ctypes.c_uint32),
+        ("value64", ctypes.c_int64),
+    ]
+
+
+class _ExtCtrls(ctypes.Structure):
+    _fields_ = [
+        ("which", ctypes.c_uint32),
+        ("count", ctypes.c_uint32),
+        ("error_idx", ctypes.c_uint32),
+        ("request_fd", ctypes.c_int32),
+        ("reserved", ctypes.c_uint32),
+        ("controls", ctypes.POINTER(_ExtCtrl)),
+    ]
+
+
+_VIDIOC_S_EXT_CTRLS = _ioc(3, "V", 72, ctypes.sizeof(_ExtCtrls))
+
+PAN_RANGE = {"min": -522000, "max": 522000, "step": 3600}
+TILT_RANGE = {"min": -324000, "max": 360000, "step": 3600}
+ZOOM_RANGE = {"min": 100, "max": 400, "step": 1}
+FINE_STEP = {"pan": 3600, "tilt": 7200, "zoom": 7}
+FAST_STEP = {"pan": 10800, "tilt": 18000, "zoom": 14}
+
+
+def s_ext_pan_tilt(fd: int, pan: int, tilt: int) -> None:
+    ctrls = (_ExtCtrl * 2)()
+    ctrls[0].id = V4L2_CID_PAN_ABSOLUTE
+    ctrls[0].value64 = int(pan)
+    ctrls[1].id = V4L2_CID_TILT_ABSOLUTE
+    ctrls[1].value64 = int(tilt)
+    wrap = _ExtCtrls(0, 2, 0, -1, 0, ctypes.cast(ctrls, ctypes.POINTER(_ExtCtrl)))
+    fcntl.ioctl(fd, _VIDIOC_S_EXT_CTRLS, wrap)
+
+
+def xu_set(fd: int, selector: int, data: bytes) -> None:
+    buf = (ctypes.c_uint8 * len(data)).from_buffer_copy(bytearray(data))
+    query = UvcXuQuery(XU_UNIT, selector, UVC_SET_CUR, len(data), ctypes.addressof(buf))
+    fcntl.ioctl(fd, UVCIOC_CTRL_QUERY, query)
+
+
+def mode_off(fd: int) -> None:
+    try:
+        xu_set(fd, XU_MODE, bytes(XU_MODE_LEN))
+    except OSError:
+        pass
+
+
+def open_device(path: str) -> int:
+    return os.open(os.path.realpath(path), os.O_RDWR)
+
+
 def pose_from_ctrls(ctrls: dict[str, dict[str, int]]) -> dict[str, int]:
     return {
         "pan": ctrls["pan"]["value"],
@@ -119,7 +219,7 @@ def cmd_get() -> None:
     print(json.dumps({"present": True, "device": device, "pose": pose_from_ctrls(ctrls), "ranges": ctrls}))
 
 
-def cmd_set(pan: int, tilt: int, zoom: int) -> None:
+def cmd_set(pan: int, tilt: int, zoom: int, unlock: bool = False) -> None:
     device = find_device()
     if not device:
         die("camera not found")
@@ -127,19 +227,55 @@ def cmd_set(pan: int, tilt: int, zoom: int) -> None:
     pan_v = snap(pan, ctrls["pan"])
     tilt_v = snap(tilt, ctrls["tilt"])
     zoom_v = snap(zoom, ctrls["zoom"])
-    proc = run(
-        [
-            "v4l2-ctl",
-            "-d",
-            device,
-            "--set-ctrl",
-            f"pan_absolute={pan_v},tilt_absolute={tilt_v},zoom_absolute={zoom_v}",
-        ],
-        timeout=2.5,
-    )
-    if proc.returncode != 0:
-        die(proc.stderr.strip() or "v4l2-ctl --set-ctrl failed")
+    fd = open_device(device)
+    try:
+        if unlock:
+            mode_off(fd)
+        s_ext_pan_tilt(fd, pan_v, tilt_v)
+        s_ctrl(fd, V4L2_CID_ZOOM_ABSOLUTE, zoom_v)
+    except OSError as exc:
+        die(str(exc))
+    finally:
+        os.close(fd)
     print(json.dumps({"present": True, "device": device, "pose": {"pan": pan_v, "tilt": tilt_v, "zoom": zoom_v}}))
+
+
+def cmd_nudge(d_pan: int, d_tilt: int, d_zoom: int, fine: bool = False) -> None:
+    device = find_device()
+    if not device:
+        die("camera not found")
+    step = FINE_STEP if fine else FAST_STEP
+    fd = open_device(device)
+    try:
+        pan = g_ctrl(fd, V4L2_CID_PAN_ABSOLUTE)
+        tilt = g_ctrl(fd, V4L2_CID_TILT_ABSOLUTE)
+        zoom = g_ctrl(fd, V4L2_CID_ZOOM_ABSOLUTE)
+        pan = snap(pan + d_pan * step["pan"], PAN_RANGE)
+        tilt = snap(tilt + d_tilt * step["tilt"], TILT_RANGE)
+        zoom = snap(zoom + d_zoom * step["zoom"], ZOOM_RANGE)
+        s_ext_pan_tilt(fd, pan, tilt)
+        if d_zoom:
+            s_ctrl(fd, V4L2_CID_ZOOM_ABSOLUTE, zoom)
+    except OSError as exc:
+        die(str(exc))
+    finally:
+        os.close(fd)
+    print(json.dumps({"present": True, "device": device, "pose": {"pan": pan, "tilt": tilt, "zoom": zoom}}))
+
+
+def cmd_prepare() -> None:
+    device = find_device()
+    if not device:
+        print(json.dumps({"present": False}))
+        return
+    fd = open_device(device)
+    try:
+        mode_off(fd)
+    except OSError as exc:
+        die(str(exc))
+    finally:
+        os.close(fd)
+    print(json.dumps({"present": True, "device": device}))
 
 
 def label_for(name: str) -> str:
@@ -286,7 +422,7 @@ def cmd_occupancy() -> None:
 
 
 def usage() -> None:
-    print("usage: ptz.py device|get|set PAN TILT ZOOM|occupancy", file=sys.stderr)
+    print("usage: ptz.py device|get|prepare|set [--unlock] PAN TILT ZOOM|nudge [--fine] DPAN DTILT DZOOM|occupancy", file=sys.stderr)
     sys.exit(2)
 
 
@@ -298,10 +434,30 @@ def main(argv: list[str]) -> None:
         cmd_device()
     elif cmd == "get":
         cmd_get()
+    elif cmd == "prepare":
+        cmd_prepare()
     elif cmd == "set":
-        if len(argv) != 5:
+        unlock = False
+        nums: list[int] = []
+        for arg in argv[2:]:
+            if arg == "--unlock":
+                unlock = True
+            else:
+                nums.append(int(arg))
+        if len(nums) != 3:
             usage()
-        cmd_set(int(argv[2]), int(argv[3]), int(argv[4]))
+        cmd_set(nums[0], nums[1], nums[2], unlock=unlock)
+    elif cmd == "nudge":
+        fine = False
+        nums: list[int] = []
+        for arg in argv[2:]:
+            if arg == "--fine":
+                fine = True
+            else:
+                nums.append(int(arg))
+        if len(nums) != 3:
+            usage()
+        cmd_nudge(nums[0], nums[1], nums[2], fine=fine)
     elif cmd == "occupancy":
         cmd_occupancy()
     else:

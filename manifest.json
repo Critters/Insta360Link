@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "dave.insta360-link",
   "name": "Insta360 Link",
-  "version": "1.0.0",
+  "version": "0.1.4",
   "author": "Dave",
   "license": "MIT",
   "description": "PTZ, presets, and auto-park for an Insta360 Link webcam.",
