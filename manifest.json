@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "id": "dave.insta360-link",
+  "name": "Insta360 Link",
+  "version": "1.0.0",
+  "author": "Dave",
+  "license": "MIT",
+  "description": "PTZ, presets, and auto-park for an Insta360 Link webcam.",
+  "kinds": [
+    "service",
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "service": "Service.qml",
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Insta360 Link",
+    "description": "Pan, tilt, zoom, and presets for the Link webcam.",
+    "category": "System",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}
