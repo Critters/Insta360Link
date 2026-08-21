@@ -1,5 +1,5 @@
 function repoUrl() {
-  return "https://github.com/OWNER/Insta360Link"
+  return "https://github.com/Critters/Insta360Link"
 }
 
 function num(value, fallback) {

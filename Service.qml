@@ -287,7 +287,7 @@ Item {
   }
 
   Component.onCompleted: {
-    console.log("dave.insta360-link service 0.1.4")
+    console.log("insta360-link service 0.1.7")
     if (ptzBin) {
       prepareProc.command = ["python3", ptzBin, "prepare"]
       prepareProc.running = true

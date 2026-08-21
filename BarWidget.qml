@@ -5,10 +5,10 @@ import qs.Ui
 
 BarWidget {
   id: root
-  moduleName: "dave.insta360-link"
+  moduleName: "insta360-link"
 
   readonly property var ptz: bar && bar.shell && bar.shell.serviceFor
-    ? bar.shell.serviceFor("dave.insta360-link") : null
+    ? bar.shell.serviceFor("insta360-link") : null
 
   function injectPanel() {
     var target = panelLoader.item

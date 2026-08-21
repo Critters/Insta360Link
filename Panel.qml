@@ -6,8 +6,8 @@ import "Model.js" as Model
 
 Panel {
   id: root
-  moduleName: "dave.insta360-link"
-  ipcTarget: "dave.insta360-link"
+  moduleName: "insta360-link"
+  ipcTarget: "insta360-link"
   manageIpc: false
 
   property var anchorItem: null
@@ -28,7 +28,7 @@ Panel {
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
   function service() {
     if (bar && bar.shell && typeof bar.shell.serviceFor === "function")
-      return bar.shell.serviceFor("dave.insta360-link")
+      return bar.shell.serviceFor("insta360-link")
     return ptz
   }
 
@@ -195,7 +195,7 @@ Panel {
         PanelHero {
           width: parent.width
           title: "Camera"
-          meta: root.statusText + "  ·  v0.1.4"
+          meta: root.statusText + "  ·  v0.1.7"
           foreground: root.foreground
           fontFamily: root.fontFamily
           iconComponent: Text {
@@ -270,7 +270,7 @@ Panel {
 
           Text {
             width: parent.width
-            text: "- First preset is the camera's default.\n- Save upto 3 presets, changes you make are auto-saved as they are made.\n- Shift+Click to reduce the jog speed.\n- Double click a preset to rename it."
+            text: "- First preset is the camera's default.\n- Save upto 3 presets, changes you make are auto-saved as they are made.\n- Shift+Click to reduce the jog speed.\n- Double click a preset to rename it.\n- Right-click a preset, or press D, to make it the default.\n- Arrow keys pan and tilt. + and - zoom."
             color: root.foreground
             font.family: root.fontFamily
             font.pixelSize: Style.font.body
